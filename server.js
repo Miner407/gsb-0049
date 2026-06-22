@@ -2,8 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const bodyParser = require('body-parser');
-const { db, init, prepareAndRun } = require('./db');
-const { generateTasksForPlan, generateAllTasks, togglePlan, formatDate } = require('./taskGenerator');
+const { db, init, prepareAndRun, addStatusHistory, getStatusHistory } = require('./db');
+const { generateTasksForPlan, generateAllTasks, togglePlan, formatDate, previewTasksForPlan } = require('./taskGenerator');
 const anomalyFlow = require('./anomalyFlow');
 const stats = require('./statistics');
 
@@ -62,6 +62,7 @@ app.get('/api/devices/:id', async (req, res) => {
     LEFT JOIN inspection_plans p ON p.id = t.plan_id
     WHERE t.device_id = ? ORDER BY t.task_date DESC LIMIT 20
   `, device.id);
+  device.repeat_anomaly_count = device.anomalies ? device.anomalies.length : 0;
   res.json(device);
 });
 
@@ -147,12 +148,14 @@ app.get('/api/plans/:id', async (req, res) => {
 });
 
 app.post('/api/plans', async (req, res) => {
-  const { name, device_type, area, template_id, cycle, cycle_days, start_date, end_date, inspector_ids, description, device_ids } = req.body;
+  const { name, device_type, area, template_id, cycle, cycle_days, start_date, end_date,
+          inspector_ids, description, device_ids, holiday_strategy } = req.body;
   const info = await prepareAndRun(
-    `INSERT INTO inspection_plans (name, device_type, area, template_id, cycle, cycle_days, start_date, end_date, inspector_ids, description)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO inspection_plans (name, device_type, area, template_id, cycle, cycle_days, start_date, end_date, inspector_ids, holiday_strategy, description)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [name, device_type || null, area || null, template_id || null, cycle, cycle_days || 1,
-     start_date, end_date || null, JSON.stringify(inspector_ids || []), description || null]
+     start_date, end_date || null, JSON.stringify(inspector_ids || []),
+     holiday_strategy || 'skip', description || null]
   );
   if (device_ids && Array.isArray(device_ids)) {
     for (const did of device_ids) {
@@ -168,10 +171,62 @@ app.post('/api/plans/:id/generate', async (req, res) => {
   res.json(result);
 });
 
+app.post('/api/plans/:id/preview', async (req, res) => {
+  const { from, to } = req.body;
+  const result = await previewTasksForPlan(parseInt(req.params.id), from, to);
+  res.json(result);
+});
+
 app.post('/api/plans/:id/toggle', async (req, res) => {
-  const { paused } = req.body;
-  const plan = await togglePlan(parseInt(req.params.id), paused);
+  const { paused, reason } = req.body;
+  const plan = await togglePlan(parseInt(req.params.id), paused, reason);
   res.json(plan);
+});
+
+app.put('/api/plans/:id', async (req, res) => {
+  const planId = parseInt(req.params.id);
+  const existing = await db.get('SELECT * FROM inspection_plans WHERE id = ?', planId);
+  if (!existing) return res.status(404).json({ error: '计划不存在' });
+
+  const { name, device_type, area, template_id, cycle, cycle_days, start_date, end_date,
+          inspector_ids, description, holiday_strategy, device_ids } = req.body;
+
+  await prepareAndRun(
+    `UPDATE inspection_plans SET
+      name = COALESCE(?, name),
+      device_type = ?,
+      area = ?,
+      template_id = ?,
+      cycle = COALESCE(?, cycle),
+      cycle_days = COALESCE(?, cycle_days),
+      start_date = COALESCE(?, start_date),
+      end_date = ?,
+      inspector_ids = COALESCE(?, inspector_ids),
+      holiday_strategy = COALESCE(?, holiday_strategy),
+      description = ?
+     WHERE id = ?`,
+    [name || null, device_type || null, area || null, template_id || null,
+     cycle || null, cycle_days || null, start_date || null, end_date || null,
+     JSON.stringify(inspector_ids || existing.inspector_ids || []),
+     holiday_strategy || null, description || null, planId]
+  );
+
+  if (device_ids && Array.isArray(device_ids)) {
+    await db.run('DELETE FROM plan_devices WHERE plan_id = ?', planId);
+    for (const did of device_ids) {
+      await prepareAndRun('INSERT OR IGNORE INTO plan_devices (plan_id, device_id) VALUES (?, ?)', [planId, did]);
+    }
+  }
+
+  const updated = await db.get('SELECT * FROM inspection_plans WHERE id = ?', planId);
+  try { updated.inspector_list = JSON.parse(updated.inspector_ids || '[]'); } catch (e) { updated.inspector_list = []; }
+  updated.devices = await db.all(`
+    SELECT d.* FROM devices d
+    JOIN plan_devices pd ON pd.device_id = d.id
+    WHERE pd.plan_id = ? ORDER BY d.id
+  `, planId);
+
+  res.json(updated);
 });
 
 app.post('/api/tasks/generate-all', async (req, res) => {
@@ -234,7 +289,7 @@ app.post('/api/tasks/:id/submit', async (req, res) => {
 });
 
 app.get('/api/anomalies', async (req, res) => {
-  const { status, level, area, device_id, overdue } = req.query;
+  const { status, level, area, device_id, overdue, responsible_id } = req.query;
   let sql = `
     SELECT a.*, d.name as device_name, d.code as device_code, d.area, d.type as device_type,
       u.name as reporter_name, ru.name as responsible_name
@@ -249,6 +304,7 @@ app.get('/api/anomalies', async (req, res) => {
   if (level) { sql += ' AND a.level = ?'; params.push(level); }
   if (area) { sql += ' AND d.area = ?'; params.push(area); }
   if (device_id) { sql += ' AND a.device_id = ?'; params.push(device_id); }
+  if (responsible_id) { sql += ' AND a.responsible_id = ?'; params.push(responsible_id); }
   if (overdue === 'true') {
     const today = formatDate(new Date());
     sql += " AND a.deadline < ? AND a.status NOT IN ('closed')";
@@ -265,7 +321,7 @@ app.get('/api/anomalies', async (req, res) => {
 
 app.get('/api/anomalies/:id', async (req, res) => {
   const anomaly = await db.get(`
-    SELECT a.*, d.name as device_name, d.code as device_code, d.area,
+    SELECT a.*, d.name as device_name, d.code as device_code, d.area, d.type as device_type,
       u.name as reporter_name, ru.name as responsible_name, t.task_date
     FROM anomalies a
     JOIN devices d ON d.id = a.device_id
@@ -275,23 +331,32 @@ app.get('/api/anomalies/:id', async (req, res) => {
     WHERE a.id = ?
   `, req.params.id);
   if (!anomaly) return res.status(404).json({ error: '异常不存在' });
+
   anomaly.rectifications = await db.all(`
-    SELECT r.*, u.name as handler_name
-    FROM rectifications r LEFT JOIN users u ON u.id = r.handler_id
+    SELECT r.*, u.name as handler_name, au.name as approver_name
+    FROM rectifications r
+    LEFT JOIN users u ON u.id = r.handler_id
+    LEFT JOIN users au ON au.id = r.extension_approver_id
     WHERE r.anomaly_id = ? ORDER BY r.id
   `, anomaly.id);
+
   anomaly.rechecks = await db.all(`
     SELECT rc.*, u.name as rechecker_name
     FROM rechecks rc LEFT JOIN users u ON u.id = rc.rechecker_id
     WHERE rc.anomaly_id = ? ORDER BY rc.id
   `, anomaly.id);
+
+  anomaly.extensions = anomaly.rectifications.filter(r => r.extension_request);
+
+  anomaly.status_history = await getStatusHistory(anomaly.id);
+
   res.json(anomaly);
 });
 
 app.post('/api/anomalies/:id/assign', async (req, res) => {
   try {
-    const { responsible_id } = req.body;
-    const result = await anomalyFlow.assignAnomaly(parseInt(req.params.id), responsible_id);
+    const { responsible_id, operator_id } = req.body;
+    const result = await anomalyFlow.assignAnomaly(parseInt(req.params.id), responsible_id, operator_id);
     res.json(result);
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -310,8 +375,8 @@ app.post('/api/anomalies/:id/rectify', async (req, res) => {
 
 app.post('/api/anomalies/:id/extension', async (req, res) => {
   try {
-    const { reason, days } = req.body;
-    const result = await anomalyFlow.requestExtension(parseInt(req.params.id), reason, days);
+    const { reason, days, applicant_id } = req.body;
+    const result = await anomalyFlow.requestExtension(parseInt(req.params.id), reason, days, applicant_id);
     res.json(result);
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -320,8 +385,8 @@ app.post('/api/anomalies/:id/extension', async (req, res) => {
 
 app.post('/api/rectifications/:id/approve-extension', async (req, res) => {
   try {
-    const { approved } = req.body;
-    const result = await anomalyFlow.approveExtension(parseInt(req.params.id), approved);
+    const { approved, approver_id, remark } = req.body;
+    const result = await anomalyFlow.approveExtension(parseInt(req.params.id), approved, approver_id, remark);
     res.json(result);
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -364,18 +429,18 @@ app.delete('/api/holidays/:id', async (req, res) => {
 });
 
 app.get('/api/stats/dashboard', async (req, res) => {
-  const data = await stats.getDashboardStats();
+  const data = await stats.getDashboardStats(req.query);
   res.json(data);
 });
 
 app.get('/api/stats/completion', async (req, res) => {
-  const { from, to } = req.query;
-  res.json(await stats.getPlanCompletionRate(from, to));
+  const { from, to, area, device_type, plan_id, inspector_id } = req.query;
+  res.json(await stats.getPlanCompletionRate(from, to, { area, device_type, plan_id, inspector_id }));
 });
 
 app.get('/api/stats/anomaly-rate', async (req, res) => {
-  const { from, to } = req.query;
-  res.json(await stats.getAnomalyRate(from, to));
+  const { from, to, area, device_type, plan_id } = req.query;
+  res.json(await stats.getAnomalyRate(from, to, { area, device_type, plan_id }));
 });
 
 app.get('/api/stats/area-risk', async (req, res) => {
@@ -383,8 +448,23 @@ app.get('/api/stats/area-risk', async (req, res) => {
 });
 
 app.get('/api/stats/workload', async (req, res) => {
-  const { from, to } = req.query;
-  res.json(await stats.getInspectorWorkload(from, to));
+  const { from, to, role } = req.query;
+  res.json(await stats.getInspectorWorkload(from, to, { role }));
+});
+
+app.get('/api/stats/trend', async (req, res) => {
+  const { from, to, type, area, device_type, plan_id } = req.query;
+  res.json(await stats.getTrendData(from, to, { type, area, device_type, plan_id }));
+});
+
+app.get('/api/stats/level-distribution', async (req, res) => {
+  const { from, to, area, device_type } = req.query;
+  res.json(await stats.getLevelDistribution(from, to, { area, device_type }));
+});
+
+app.get('/api/stats/repeat-devices', async (req, res) => {
+  const { limit, area, device_type } = req.query;
+  res.json(await stats.getRepeatAnomalyDevices({ limit, area, device_type }));
 });
 
 app.get('/', (req, res) => {
@@ -400,15 +480,18 @@ app.use((err, req, res, next) => {
 async function startServer() {
   await init();
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
     console.log(`Public directory: ${path.join(__dirname, 'public')}`);
   });
+  return server;
 }
 
-startServer().catch(e => {
-  console.error('Failed to start server:', e);
-  process.exit(1);
-});
+if (require.main === module) {
+  startServer().catch(e => {
+    console.error('Failed to start server:', e);
+    process.exit(1);
+  });
+}
 
-module.exports = app;
+module.exports = { app, startServer };

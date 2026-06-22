@@ -6,11 +6,14 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
+    "init-db": "node scripts/init-db.js",
+    "seed": "node scripts/seed.js",
+    "reset-db": "node scripts/reset-db.js",
+    "verify-data": "node scripts/verify-data.js",
     "test": "node test/api-test.js",
-    "lint": "node -e \"const fs=require('fs');const path=require('path');function check(dir){fs.readdirSync(dir).forEach(f=>{const p=path.join(dir,f);const s=fs.statSync(p);if(s.isDirectory()&&f!=='node_modules')check(p);else if(f.endsWith('.js')){try{new Function(fs.readFileSync(p,'utf8'));console.log('OK:',p)}catch(e){console.log('ERROR:',p,e.message)}}})}check('.')\""
+    "lint": "node -e \"const fs=require('fs');const path=require('path');function check(dir){fs.readdirSync(dir).forEach(f=>{const p=path.join(dir,f);const s=fs.statSync(p);if(s.isDirectory()&&f!=='node_modules')check(p);else if(f.endsWith('.js')){try{new Function(fs.readFileSync(p,'utf8'));console.log('OK:',p)}catch(e){console.log('ERROR:',p,e.message);process.exitCode=1}}})}check('.')\""
   },
   "dependencies": {
-    "better-sqlite3": "^11.1.2",
     "body-parser": "^1.20.2",
     "cors": "^2.8.5",
     "express": "^4.18.2",

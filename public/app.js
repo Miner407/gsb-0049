@@ -101,37 +101,185 @@ async function renderPage(page) {
   if (map[page]) await map[page]();
 }
 
+let dashboardFilters = { area: '', device_type: '', inspector_id: '', plan_id: '' };
+
+async function loadDashboardData() {
+  const qs = new URLSearchParams();
+  if (dashboardFilters.area) qs.set('area', dashboardFilters.area);
+  if (dashboardFilters.device_type) qs.set('device_type', dashboardFilters.device_type);
+  if (dashboardFilters.inspector_id) qs.set('inspector_id', dashboardFilters.inspector_id);
+  const data = await api(`/stats/dashboard?${qs.toString()}`);
+
+  const [trendData, levelData] = await Promise.all([
+    api(`/stats/trend?type=completion&${qs.toString()}`),
+    api(`/stats/level-distribution?${qs.toString()}`)
+  ]);
+
+  return { data, trendData, levelData };
+}
+
 async function renderDashboard() {
-  const data = await api('/stats/dashboard');
   const content = $('page-content');
+  const [plans, { data, trendData, levelData }] = await Promise.all([
+    api('/plans'),
+    loadDashboardData()
+  ]);
+
+  const overdueAnomalies = await api('/anomalies/overdue/list');
 
   content.innerHTML = `
-    <div class="page-header"><h2>📊 统计看板</h2></div>
+    <div class="page-header">
+      <h2>📊 统计看板</h2>
+      <div>
+        <button class="btn" onclick="location.reload();">🔄 刷新</button>
+      </div>
+    </div>
+
+    <div class="card filter-card">
+      <div class="toolbar">
+        <label>区域：</label>
+        <select id="dash-area" onchange="applyDashboardFilters()">
+          <option value="">全部区域</option>
+          ${areas.map(a => `<option value="${a}" ${dashboardFilters.area === a ? 'selected' : ''}>${a}</option>`).join('')}
+        </select>
+        <label>设备类型：</label>
+        <select id="dash-type" onchange="applyDashboardFilters()">
+          <option value="">全部类型</option>
+          ${deviceTypes.map(t => `<option value="${t}" ${dashboardFilters.device_type === t ? 'selected' : ''}>${t}</option>`).join('')}
+        </select>
+        <label>负责人：</label>
+        <select id="dash-inspector" onchange="applyDashboardFilters()">
+          <option value="">全部</option>
+          ${users.filter(u => u.role !== 'worker').map(u => `<option value="${u.id}" ${dashboardFilters.inspector_id == u.id ? 'selected' : ''}>${u.name}</option>`).join('')}
+        </select>
+      </div>
+    </div>
 
     <div class="stat-grid">
-      <div class="stat-card blue">
-        <div class="stat-label">计划完成率</div>
-        <div class="stat-value">${data.planCompletion.rate}%</div>
-        <div class="stat-sub">${data.planCompletion.completed} / ${data.planCompletion.total} 任务</div>
-        <div class="progress-bar"><div class="progress-fill blue" style="width:${data.planCompletion.rate}%"></div></div>
+      <div class="stat-card blue" onclick="navigateToPage('tasks')">
+        <div class="stat-label">今日待巡检</div>
+        <div class="stat-value">${data.todayPending}</div>
+        <div class="stat-sub">点击查看任务列表</div>
+        <div class="progress-bar"><div class="progress-fill blue" style="width:${Math.min(data.todayPending * 10, 100)}%"></div></div>
       </div>
-      <div class="stat-card orange">
-        <div class="stat-label">异常率</div>
-        <div class="stat-value">${data.anomalyRate.rate}%</div>
-        <div class="stat-sub">${data.anomalyRate.anomalyTasks} / ${data.anomalyRate.submittedTasks} 异常任务</div>
-        <div class="progress-bar"><div class="progress-fill orange" style="width:${Math.min(data.anomalyRate.rate, 100)}%"></div></div>
-      </div>
-      <div class="stat-card red">
+      <div class="stat-card red" onclick="navigateToPage('anomalies', {overdue: 'true'})">
         <div class="stat-label">逾期整改数</div>
         <div class="stat-value">${data.overdueCount}</div>
         <div class="stat-sub">需立即处理</div>
         <div class="progress-bar"><div class="progress-fill red" style="width:${Math.min(data.overdueCount * 10, 100)}%"></div></div>
       </div>
+      <div class="stat-card purple">
+        <div class="stat-label">待复查异常</div>
+        <div class="stat-value">${data.pendingRecheck}</div>
+        <div class="stat-sub">${data.topRiskArea ? `最高风险：${data.topRiskArea.area} (${data.topRiskArea.risk_rate}%)` : '暂无风险数据'}</div>
+        <div class="progress-bar"><div class="progress-fill" style="background: linear-gradient(90deg, #722ed1, #9254de); width:${Math.min(data.pendingRecheck * 10, 100)}%"></div></div>
+      </div>
+      <div class="stat-card orange">
+        <div class="stat-label">计划完成率</div>
+        <div class="stat-value">${data.planCompletion.rate}%</div>
+        <div class="stat-sub">${data.planCompletion.completed} / ${data.planCompletion.total} 任务</div>
+        <div class="progress-bar"><div class="progress-fill orange" style="width:${data.planCompletion.rate}%"></div></div>
+      </div>
+    </div>
+
+    <div class="stat-grid">
       <div class="stat-card green">
+        <div class="stat-label">异常率</div>
+        <div class="stat-value">${data.anomalyRate.rate}%</div>
+        <div class="stat-sub">${data.anomalyRate.anomalyTasks} / ${data.anomalyRate.submittedTasks} 异常任务</div>
+        <div class="progress-bar"><div class="progress-fill green" style="width:${Math.min(data.anomalyRate.rate, 100)}%"></div></div>
+      </div>
+      <div class="stat-card blue">
         <div class="stat-label">重复异常设备</div>
         <div class="stat-value">${data.repeatDevices.length}</div>
-        <div class="stat-sub">需关注设备</div>
-        <div class="progress-bar"><div class="progress-fill green" style="width:${Math.min(data.repeatDevices.length * 10, 100)}%"></div></div>
+        <div class="stat-sub">需重点关注设备</div>
+        <div class="progress-bar"><div class="progress-fill blue" style="width:${Math.min(data.repeatDevices.length * 10, 100)}%"></div></div>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="card">
+        <div class="section-title">今日待巡检任务</div>
+        ${data.todayTasks.length ? `
+          <table>
+            <thead><tr><th>设备</th><th>区域</th><th>计划</th><th>巡检员</th><th>操作</th></tr></thead>
+            <tbody>
+              ${data.todayTasks.map(t => `
+                <tr>
+                  <td>${t.device_name}</td>
+                  <td>${t.area}</td>
+                  <td>${t.plan_name || '-'}</td>
+                  <td>${t.inspector_name || '-'}</td>
+                  <td><button class="btn btn-sm btn-primary" onclick="showTaskDetail(${t.id})">巡检</button></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        ` : '<div class="empty-state">今日暂无待巡检任务</div>'}
+      </div>
+
+      <div class="card">
+        <div class="section-title">逾期整改异常</div>
+        ${overdueAnomalies.length ? `
+          <table>
+            <thead><tr><th>设备</th><th>异常</th><th>等级</th><th>责任人</th><th>截止日期</th></tr></thead>
+            <tbody>
+              ${overdueAnomalies.slice(0, 8).map(a => `
+                <tr>
+                  <td>${a.device_name}</td>
+                  <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${a.description}</td>
+                  <td>${levelBadge(a.level)}</td>
+                  <td>${a.responsible_name || '-'}</td>
+                  <td><span style="color:#f5222d;font-weight:bold;">${a.deadline}</span></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        ` : '<div class="empty-state">暂无逾期异常</div>'}
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="card">
+        <div class="section-title">待复查异常</div>
+        ${data.recheckList.length ? `
+          <table>
+            <thead><tr><th>设备</th><th>异常</th><th>等级</th><th>责任人</th><th>操作</th></tr></thead>
+            <tbody>
+              ${data.recheckList.map(a => `
+                <tr>
+                  <td>${a.device_name}</td>
+                  <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${a.description}</td>
+                  <td>${levelBadge(a.level)}</td>
+                  <td>${a.responsible_name || '-'}</td>
+                  <td><button class="btn btn-sm btn-primary" onclick="showAnomalyDetail(${a.id});closeModal();">复查</button></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        ` : '<div class="empty-state">暂无待复查异常</div>'}
+      </div>
+
+      <div class="card">
+        <div class="section-title">异常等级分布</div>
+        ${levelData.total > 0 ? `
+          <div class="level-distribution">
+            ${levelData.list.map(l => `
+              <div class="level-item">
+                <div class="level-header">
+                  <span>${levelBadge(l.level)}</span>
+                  <span>${l.count} 个 (${l.percentage}%)</span>
+                </div>
+                <div class="progress-bar"><div class="progress-fill" style="width:${l.percentage}%; background: ${
+                  l.level === '紧急' ? '#f5222d' :
+                  l.level === '严重' ? '#fa8c16' :
+                  l.level === '一般' ? '#faad14' : '#52c41a'
+                }"></div></div>
+              </div>
+            `).join('')}
+          </div>
+          <div class="stat-sub" style="text-align:center;margin-top:8px;">总计：${levelData.total} 个异常</div>
+        ` : '<div class="empty-state">暂无异常数据</div>'}
       </div>
     </div>
 
@@ -155,6 +303,23 @@ async function renderDashboard() {
           </table>
         ` : '<div class="empty-state">暂无数据</div>'}
       </div>
+
+      <div class="card">
+        <div class="section-title">完成率趋势（近30天）</div>
+        ${trendData.data.length ? `
+          <div class="trend-chart">
+            ${trendData.data.slice(-14).map(d => `
+              <div class="trend-item" title="${d.date}: ${d.rate}%">
+                <div class="trend-bar" style="height: ${Math.max(d.rate, 5)}%; background: ${d.rate >= 80 ? '#52c41a' : d.rate >= 60 ? '#faad14' : '#f5222d'};"></div>
+                <div class="trend-label">${d.date.slice(5)}</div>
+              </div>
+            `).join('')}
+          </div>
+        ` : '<div class="empty-state">暂无趋势数据</div>'}
+      </div>
+    </div>
+
+    <div class="two-col">
       <div class="card">
         <div class="section-title">重复异常设备 TOP 10</div>
         ${data.repeatDevices.length ? `
@@ -174,32 +339,51 @@ async function renderDashboard() {
           </table>
         ` : '<div class="empty-state">暂无重复异常设备</div>'}
       </div>
-    </div>
 
-    <div class="card">
-      <div class="section-title">人员任务负载（近30天）</div>
-      ${data.workload.length ? `
-        <table>
-          <thead><tr><th>巡检员</th><th>总任务数</th><th>已完成</th><th>待处理</th><th>完成率</th><th>负载条</th></tr></thead>
-          <tbody>
-            ${data.workload.map(w => {
-              const rate = w.total_tasks > 0 ? Math.round(w.completed_tasks / w.total_tasks * 100) : 0;
-              return `
-                <tr>
-                  <td>${w.name}</td>
-                  <td>${w.total_tasks}</td>
-                  <td>${w.completed_tasks}</td>
-                  <td>${w.pending_tasks}</td>
-                  <td>${rate}%</td>
-                  <td><div class="progress-bar" style="max-width:200px;"><div class="progress-fill blue" style="width:${rate}%"></div></div></td>
-                </tr>
-              `;
-            }).join('')}
-          </tbody>
-        </table>
-      ` : '<div class="empty-state">暂无数据</div>'}
+      <div class="card">
+        <div class="section-title">人员任务负载（近30天）</div>
+        ${data.workload.length ? `
+          <table>
+            <thead><tr><th>巡检员</th><th>角色</th><th>总任务</th><th>已完成</th><th>待处理</th><th>完成率</th></tr></thead>
+            <tbody>
+              ${data.workload.map(w => {
+                const rate = w.total_tasks > 0 ? Math.round(w.completed_tasks / w.total_tasks * 100) : 0;
+                return `
+                  <tr>
+                    <td>${w.name}</td>
+                    <td>${w.role || '-'}</td>
+                    <td>${w.total_tasks}</td>
+                    <td>${w.completed_tasks}</td>
+                    <td>${w.pending_tasks}</td>
+                    <td>
+                      <span style="color: ${rate >= 80 ? '#52c41a' : rate >= 60 ? '#faad14' : '#f5222d'}; font-weight: bold;">${rate}%</span>
+                      <div class="progress-bar" style="max-width:100px;margin-top:4px;"><div class="progress-fill blue" style="width:${rate}%"></div></div>
+                    </td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        ` : '<div class="empty-state">暂无数据</div>'}
+      </div>
     </div>
   `;
+}
+
+function applyDashboardFilters() {
+  dashboardFilters.area = $('dash-area').value;
+  dashboardFilters.device_type = $('dash-type').value;
+  dashboardFilters.inspector_id = $('dash-inspector').value;
+  renderDashboard();
+}
+
+function navigateToPage(page, params = {}) {
+  const qs = new URLSearchParams();
+  Object.keys(params).forEach(k => qs.set(k, params[k]));
+  window.history.replaceState(null, '', `?${qs.toString()}`);
+  document.querySelectorAll('#nav-menu li').forEach(l => l.classList.remove('active'));
+  document.querySelector(`#nav-menu li[data-page="${page}"]`).classList.add('active');
+  renderPage(page);
 }
 
 let calState = { viewMonth: new Date() };
@@ -223,11 +407,6 @@ async function renderCalendar() {
 
   const holidayMap = {};
   holidays.forEach(h => { holidayMap[h.date] = h.name; });
-  const tasksByDate = {};
-  tasks.tasks.forEach(t => {
-    if (!tasksByDate[t.task_date]) tasksByDate[t.task_date] = [];
-    tasksByDate[t.task_date].push(t);
-  });
 
   const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
   const cells = [];
@@ -237,6 +416,24 @@ async function renderCalendar() {
     cells.push({ date: d, dateStr, day: new Date(y, m, d).getDay() });
   }
 
+  const areaFilter = calState.areaFilter || '';
+  const filteredTasks = areaFilter
+    ? tasks.tasks.filter(t => t.area === areaFilter)
+    : tasks.tasks;
+
+  const tasksByDate = {};
+  filteredTasks.forEach(t => {
+    if (!tasksByDate[t.task_date]) tasksByDate[t.task_date] = [];
+    tasksByDate[t.task_date].push(t);
+  });
+
+  const stats = {
+    pending: filteredTasks.filter(t => !t.skipped && t.status === 'pending').length,
+    done: filteredTasks.filter(t => !t.skipped && t.status === 'submitted').length,
+    holiday: filteredTasks.filter(t => t.skipped && t.skip_type === 'holiday').length,
+    paused: filteredTasks.filter(t => t.skipped && t.skip_type === 'paused').length
+  };
+
   content.innerHTML = `
     <div class="page-header">
       <h2>📅 计划日历</h2>
@@ -245,15 +442,27 @@ async function renderCalendar() {
         <b style="margin:0 16px;font-size:16px;">${y}年${m + 1}月</b>
         <button class="btn" onclick="changeMonth(1)">下月 ▶</button>
         <button class="btn btn-primary" onclick="generateTasksAction()" style="margin-left:16px;">🔄 生成本月任务</button>
+        <button class="btn" onclick="showPreviewPlan()" style="margin-left:8px;">👁️ 预览任务</button>
       </div>
     </div>
 
     <div class="card">
+      <div class="calendar-legend">
+        <div class="legend-item"><span class="legend-dot normal"></span> 待执行 (${stats.pending})</div>
+        <div class="legend-item"><span class="legend-dot done"></span> 已完成 (${stats.done})</div>
+        <div class="legend-item"><span class="legend-dot holiday"></span> 节假日跳过 (${stats.holiday})</div>
+        <div class="legend-item"><span class="legend-dot paused"></span> 暂停跳过 (${stats.paused})</div>
+      </div>
       <div class="toolbar">
         <label>区域筛选：</label>
-        <select id="cal-area-filter" onchange="renderCalendar()">
+        <select id="cal-area-filter" onchange="calState.areaFilter=this.value;renderCalendar()">
           <option value="">全部区域</option>
-          ${areas.map(a => `<option value="${a}">${a}</option>`).join('')}
+          ${areas.map(a => `<option value="${a}" ${areaFilter === a ? 'selected' : ''}>${a}</option>`).join('')}
+        </select>
+        <label>计划：</label>
+        <select id="cal-plan-filter" onchange="calState.planFilter=this.value;renderCalendar()">
+          <option value="">全部计划</option>
+          ${(await api('/plans')).map(p => `<option value="${p.id}">${p.name}</option>`).join('')}
         </select>
       </div>
       <div class="calendar">
@@ -269,12 +478,21 @@ async function renderCalendar() {
               <div class="day-date">${c.date}${isHoliday ? `<span class="holiday-tag">${holidayMap[c.dateStr]}</span>` : ''}</div>
               <div class="day-tasks">
                 ${dayTasks.slice(0, 3).map(t => {
-                  let cls = '';
-                  if (t.skipped) cls = 'skipped';
-                  else if (t.status === 'submitted') cls = t.anomalies ? 'anomaly' : 'done';
-                  return `<div class="day-task ${cls}" title="${t.device_name} - ${t.status}" onclick="showTaskDetail(${t.id})">${t.device_name}</div>`;
+                  let cls = 'normal';
+                  let title = `${t.device_name} - `;
+                  if (t.skipped) {
+                    if (t.skip_type === 'holiday') { cls = 'holiday'; title += '节假日跳过'; }
+                    else if (t.skip_type === 'paused') { cls = 'paused'; title += '计划暂停'; }
+                    else { cls = 'skipped'; title += '已跳过'; }
+                  } else if (t.status === 'submitted') {
+                    cls = 'done';
+                    title += '已完成';
+                  } else {
+                    title += '待执行';
+                  }
+                  return `<div class="day-task ${cls}" title="${title}" onclick="showTaskDetail(${t.id})">${t.device_name}</div>`;
                 }).join('')}
-                ${dayTasks.length > 3 ? `<div class="day-task">+${dayTasks.length - 3}更多</div>` : ''}
+                ${dayTasks.length > 3 ? `<div class="day-task more">+${dayTasks.length - 3}更多</div>` : ''}
               </div>
             </div>
           `;
@@ -287,6 +505,73 @@ async function renderCalendar() {
 function changeMonth(delta) {
   calState.viewMonth.setMonth(calState.viewMonth.getMonth() + delta);
   renderCalendar();
+}
+
+async function showPreviewPlan() {
+  const plans = await api('/plans');
+  openModal('预览任务生成', `
+    <div class="card" style="box-shadow:none;padding:0;">
+      <form id="preview-form">
+        <div class="form-group">
+          <label>* 选择计划</label>
+          <select name="plan_id" required>
+            <option value="">请选择</option>
+            ${plans.map(p => `<option value="${p.id}">${p.name} (${p.paused ? '已暂停' : '运行中'})</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>* 开始日期</label>
+            <input type="date" name="from" value="${todayStr()}" required>
+          </div>
+          <div class="form-group">
+            <label>* 结束日期</label>
+            <input type="date" name="to" value="${formatDate(new Date(Date.now() + 30 * 86400000))}" required>
+          </div>
+        </div>
+        <div style="text-align:right;margin-top:16px;">
+          <button type="button" class="btn" onclick="closeModal()">取消</button>
+          <button type="submit" class="btn btn-primary">预览</button>
+        </div>
+      </form>
+      <div id="preview-result" style="margin-top:16px;"></div>
+    </div>
+  `);
+
+  $('preview-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const result = await api(`/plans/${fd.get('plan_id')}/preview`, {
+      method: 'POST',
+      body: { from: fd.get('from'), to: fd.get('to') }
+    });
+
+    $('preview-result').innerHTML = `
+      <div class="section-title">预览结果</div>
+      <div class="stat-grid" style="grid-template-columns: repeat(3, 1fr);">
+        <div class="stat-card blue"><div class="stat-label">总任务数</div><div class="stat-value">${result.total}</div></div>
+        <div class="stat-card green"><div class="stat-label">将生成</div><div class="stat-value">${result.created}</div></div>
+        <div class="stat-card orange"><div class="stat-label">将跳过</div><div class="stat-value">${result.skipped}</div></div>
+      </div>
+      ${result.tasks.length ? `
+        <div class="section-title" style="margin-top:16px;">任务明细</div>
+        <table>
+          <thead><tr><th>日期</th><th>设备</th><th>区域</th><th>状态</th><th>跳过原因</th></tr></thead>
+          <tbody>
+            ${result.tasks.map(t => `
+              <tr>
+                <td>${t.task_date}</td>
+                <td>${t.device_name}</td>
+                <td>${t.area}</td>
+                <td>${t.skipped ? statusBadge('skipped') : statusBadge('pending')}</td>
+                <td>${t.skip_reason || '-'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      ` : '<div class="empty-state">暂无任务</div>'}
+    `;
+  };
 }
 
 async function generateTasksAction() {
@@ -830,55 +1115,169 @@ function filterAnomalies() {
 
 async function showAnomalyDetail(anomalyId) {
   const a = await api(`/anomalies/${anomalyId}`);
+
+  const allEvents = [];
+
+  (a.status_history || []).forEach(h => {
+    allEvents.push({
+      type: 'status',
+      time: h.created_at,
+      title: `状态变更: ${h.from_status || '创建'} → ${h.to_status}`,
+      operator: h.operator_name,
+      remark: h.remark,
+      fromStatus: h.from_status,
+      toStatus: h.to_status
+    });
+  });
+
+  (a.rectifications || []).forEach(r => {
+    if (r.measure) {
+      allEvents.push({
+        type: 'rectification',
+        time: r.handled_at || r.created_at,
+        title: `第${r.round || 1}轮整改提交`,
+        operator: r.handler_name,
+        measure: r.measure,
+        evidence: r.evidence,
+        status: r.status,
+        previousMeasure: r.previous_measure
+      });
+    }
+    if (r.extension_request) {
+      allEvents.push({
+        type: 'extension',
+        time: r.created_at,
+        title: `延期申请: ${r.extension_days}天`,
+        reason: r.extension_reason,
+        approved: r.extension_approved,
+        approver: r.extension_approver_name,
+        approvalRemark: r.extension_remark,
+        approvedAt: r.extension_approved_at,
+        rectificationId: r.id
+      });
+    }
+  });
+
+  (a.rechecks || []).forEach(rc => {
+    allEvents.push({
+      type: 'recheck',
+      time: rc.rechecked_at,
+      title: `复查${rc.result === 'pass' ? '通过' : '不通过'}`,
+      operator: rc.rechecker_name,
+      result: rc.result,
+      remark: rc.remark,
+      evidence: rc.evidence
+    });
+  });
+
+  allEvents.sort((x, y) => new Date(x.time) - new Date(y.time));
+
   openModal(`异常详情 #${a.id}`, `
     <div class="card" style="box-shadow:none;padding:0;">
       <div class="two-col" style="margin-bottom:16px;">
         <div><b>设备：</b>${a.device_name} (${a.device_code})</div>
         <div><b>区域：</b>${a.area}</div>
+        <div><b>设备类型：</b>${a.device_type || '-'}</div>
         <div><b>巡检点：</b>${a.point_name || '-'}</div>
         <div><b>等级：</b>${levelBadge(a.level)}</div>
+        <div><b>状态：</b>${statusBadge(a.status)}</div>
         <div><b>报告人：</b>${a.reporter_name || '-'}</div>
         <div><b>责任人：</b>${a.responsible_name || '-'}</div>
+        <div><b>报告时间：</b>${a.reported_at || '-'}</div>
         <div><b>任务日期：</b>${a.task_date || '-'}</div>
-        <div><b>截止日期：</b>${a.deadline || '-'} ${a.status !== 'closed' && a.deadline && a.deadline < todayStr() ? '<span style=\"color:#f5222d;\">（逾期）</span>' : ''}</div>
-        <div><b>状态：</b>${statusBadge(a.status)}</div>
+        <div><b>截止日期：</b>${a.deadline || '-'} ${a.status !== 'closed' && a.deadline && a.deadline < todayStr() ? '<span style=\"color:#f5222d;font-weight:bold;\">（逾期）</span>' : ''}</div>
         <div><b>证据：</b>${a.evidence ? `<a class="evidence-link" href="${a.evidence}" target="_blank">查看</a>` : '-'}</div>
       </div>
+
       <div class="form-group" style="margin-bottom:16px;">
         <label>异常描述</label>
-        <div style="padding:10px;background:#fafafa;border-radius:4px;">${a.description}</div>
+        <div style="padding:12px;background:#fff7e6;border-radius:4px;border-left:3px solid #faad14;">${a.description}</div>
       </div>
 
-      <div class="section-title">处理时间线</div>
+      <div class="two-col" style="margin-bottom:16px;">
+        <div class="card" style="box-shadow:none;padding:12px;background:#fafafa;">
+          <div class="section-title" style="margin-bottom:8px;font-size:14px;">整改记录 (${a.rectifications ? a.rectifications.length : 0})</div>
+          ${a.rectifications && a.rectifications.length ? `
+            <div style="max-height:200px;overflow-y:auto;">
+            ${a.rectifications.map((r, i) => `
+              <div style="padding:8px;border-bottom:1px solid #e8e8e8;">
+                <div style="font-weight:600;">第${r.round || i + 1}轮整改 ${statusBadge(r.status)}</div>
+                ${r.handler_name ? `<div style="color:#6b7280;font-size:12px;">处理人：${r.handler_name}</div>` : ''}
+                ${r.measure ? `<div style="margin-top:4px;">${r.measure}</div>` : ''}
+                ${r.previous_measure ? `<div style="margin-top:4px;padding:4px;background:#fffbe6;border-radius:3px;font-size:12px;"><b>上轮措施：</b>${r.previous_measure}</div>` : ''}
+              </div>
+            `).join('')}
+            </div>
+          ` : '<div class="empty-state" style="padding:20px;">暂无整改记录</div>'}
+        </div>
+
+        <div class="card" style="box-shadow:none;padding:12px;background:#fafafa;">
+          <div class="section-title" style="margin-bottom:8px;font-size:14px;">复查记录 (${a.rechecks ? a.rechecks.length : 0})</div>
+          ${a.rechecks && a.rechecks.length ? `
+            <div style="max-height:200px;overflow-y:auto;">
+            ${a.rechecks.map(rc => `
+              <div style="padding:8px;border-bottom:1px solid #e8e8e8;">
+                <div style="font-weight:600;">
+                  复查 ${rc.result === 'pass' ? '<span class=\"badge badge-closed\">通过</span>' : '<span class=\"badge badge-reject\">退回</span>'}
+                  <span style="color:#9ca3af;font-size:12px;font-weight:normal;margin-left:8px;">${rc.rechecked_at}</span>
+                </div>
+                ${rc.rechecker_name ? `<div style="color:#6b7280;font-size:12px;">复查人：${rc.rechecker_name}</div>` : ''}
+                ${rc.remark ? `<div style="margin-top:4px;">${rc.remark}</div>` : ''}
+              </div>
+            `).join('')}
+            </div>
+          ` : '<div class="empty-state" style="padding:20px;">暂无复查记录</div>'}
+        </div>
+      </div>
+
+      <div class="section-title">完整状态时间线</div>
       <div class="timeline">
-        ${(a.rectifications || []).map(r => `
-          <div class="timeline-item">
-            <div class="timeline-title">整改${statusBadge(r.status)} <span class="timeline-time">${r.created_at}</span></div>
-            ${r.handler_name ? `<div class="timeline-content">处理人：${r.handler_name}</div>` : ''}
-            ${r.measure ? `<div class="timeline-content">整改措施：${r.measure}</div>` : ''}
-            ${r.evidence ? `<div class="timeline-content">证据：<a class="evidence-link" href="${r.evidence}" target="_blank">${r.evidence}</a></div>` : ''}
-            ${r.extension_request ? `<div class="timeline-content">
-              延期申请：${r.extension_days}天，原因：${r.extension_reason}，
-              审批：${r.extension_approved === null ? '待审批' : r.extension_approved === 1 ? '已批准' : '已拒绝'}
-              ${r.extension_approved === null && currentUser.role === 'admin' ? `
-                <button class="btn btn-sm btn-primary" onclick="approveExtension(${r.id}, true)">批准</button>
-                <button class="btn btn-sm btn-danger" onclick="approveExtension(${r.id}, false)">拒绝</button>
+        ${allEvents.map(e => {
+          let icon = '📝';
+          let dotColor = '#1890ff';
+          if (e.type === 'status') {
+            if (e.toStatus === 'closed') { icon = '✅'; dotColor = '#52c41a'; }
+            else if (e.toStatus === 'reject') { icon = '❌'; dotColor = '#f5222d'; }
+            else if (e.toStatus === 'rechecking') { icon = '🔍'; dotColor = '#722ed1'; }
+            else if (e.toStatus === 'assigned') { icon = '👤'; dotColor = '#fa8c16'; }
+          } else if (e.type === 'rectification') {
+            icon = '🔧'; dotColor = '#13c2c2';
+          } else if (e.type === 'extension') {
+            icon = '⏰'; dotColor = e.approved === 1 ? '#52c41a' : e.approved === 0 ? '#f5222d' : '#faad14';
+          } else if (e.type === 'recheck') {
+            icon = e.result === 'pass' ? '✅' : '🔄';
+            dotColor = e.result === 'pass' ? '#52c41a' : '#fa8c16';
+          }
+          return `
+            <div class="timeline-item">
+              <div class="timeline-dot" style="background:${dotColor};left:-28px;">${icon}</div>
+              <div class="timeline-title">
+                ${e.title}
+                <span class="timeline-time">${e.time}</span>
+                ${e.operator ? `<span style="color:#6b7280;font-size:12px;margin-left:8px;">操作人: ${e.operator}</span>` : ''}
+              </div>
+              ${e.measure ? `<div class="timeline-content"><b>整改措施：</b>${e.measure}</div>` : ''}
+              ${e.previousMeasure ? `<div class="timeline-content"><b>上轮措施：</b>${e.previousMeasure}</div>` : ''}
+              ${e.remark ? `<div class="timeline-content"><b>备注：</b>${e.remark}</div>` : ''}
+              ${e.reason ? `<div class="timeline-content"><b>延期原因：</b>${e.reason}</div>` : ''}
+              ${e.approved !== undefined && e.approved !== null ? `<div class="timeline-content">
+                <b>审批结果：</b>${e.approved ? '✅ 批准' : '❌ 拒绝'}
+                ${e.approver ? `，审批人：${e.approver}` : ''}
+                ${e.approvalRemark ? `，备注：${e.approvalRemark}` : ''}
+              </div>` : ''}
+              ${e.type === 'extension' && e.approved === null && currentUser.role === 'admin' ? `
+                <div class="timeline-content" style="margin-top:8px;">
+                  <button class="btn btn-sm btn-primary" onclick="approveExtension(${e.rectificationId}, true)">批准</button>
+                  <button class="btn btn-sm btn-danger" onclick="approveExtension(${e.rectificationId}, false)">拒绝</button>
+                </div>
               ` : ''}
-            </div>` : ''}
-          </div>
-        `).join('')}
-        ${(a.rechecks || []).map(rc => `
-          <div class="timeline-item">
-            <div class="timeline-title">复查${rc.result === 'pass' ? '<span class=\"badge badge-closed\">通过</span>' : '<span class=\"badge badge-reject\">退回</span>'} <span class="timeline-time">${rc.rechecked_at}</span></div>
-            ${rc.rechecker_name ? `<div class="timeline-content">复查人：${rc.rechecker_name}</div>` : ''}
-            ${rc.remark ? `<div class="timeline-content">备注：${rc.remark}</div>` : ''}
-            ${rc.evidence ? `<div class="timeline-content">证据：<a class="evidence-link" href="${rc.evidence}" target="_blank">${rc.evidence}</a></div>` : ''}
-          </div>
-        `).join('')}
+            </div>
+          `;
+        }).join('')}
       </div>
 
-      <div style="margin-top:16px;display:flex;gap:8px;">
-        ${a.status === 'pending' ? `<button class="btn btn-primary" onclick="assignAnomaly(${a.id})">分配责任人</button>` : ''}
+      <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;">
+        ${a.status === 'pending' ? `<button class="btn btn-primary" onclick="assignAnomaly(${a.id});closeModal();">分配责任人</button>` : ''}
         ${a.status === 'assigned' || a.status === 'processing' ? `
           <button class="btn btn-primary" onclick="showRectifyForm(${a.id})">提交整改</button>
           <button class="btn" onclick="showExtensionForm(${a.id})">申请延期</button>
@@ -1140,44 +1539,89 @@ function filterDevices() {
 
 async function showDeviceDetail(deviceId) {
   const d = await api(`/devices/${deviceId}`);
+  const repeatCount = d.repeat_anomaly_count || (d.anomalies ? d.anomalies.length : 0);
+  const openAnomalies = (d.anomalies || []).filter(a => a.status !== 'closed').length;
+
   openModal(`设备详情 - ${d.name}`, `
     <div class="card" style="box-shadow:none;padding:0;">
+      <div class="stat-grid" style="grid-template-columns: repeat(4, 1fr);margin-bottom:16px;">
+        <div class="stat-card blue" style="padding:12px;">
+          <div class="stat-label">巡检点数</div>
+          <div class="stat-value" style="font-size:20px;">${(d.points || []).length}</div>
+        </div>
+        <div class="stat-card orange" style="padding:12px;">
+          <div class="stat-label">异常总数</div>
+          <div class="stat-value" style="font-size:20px;">${d.anomaly_count || d.anomalies ? d.anomalies.length : 0}</div>
+        </div>
+        <div class="stat-card red" style="padding:12px;">
+          <div class="stat-label">待处理异常</div>
+          <div class="stat-value" style="font-size:20px;">${openAnomalies}</div>
+        </div>
+        <div class="stat-card purple" style="padding:12px;">
+          <div class="stat-label">重复异常次数</div>
+          <div class="stat-value" style="font-size:20px;">${repeatCount}</div>
+        </div>
+      </div>
+
       <div class="two-col" style="margin-bottom:16px;">
         <div><b>设备编号：</b>${d.code}</div>
         <div><b>设备名称：</b>${d.name}</div>
         <div><b>类型：</b>${d.type}</div>
         <div><b>区域：</b>${d.area}</div>
-        <div><b>状态：</b>${d.status}</div>
+        <div><b>状态：</b><span class="badge badge-${d.status === '正常' ? 'closed' : 'pending'}">${d.status}</span></div>
         <div><b>安装日期：</b>${d.install_date || '-'}</div>
       </div>
       ${d.description ? `<div class="form-group" style="margin-bottom:16px;"><label>设备描述</label><div style="padding:10px;background:#fafafa;border-radius:4px;">${d.description}</div></div>` : ''}
 
-      <div class="section-title">巡检点</div>
-      <table>
-        <thead><tr><th>序号</th><th>巡检点名称</th><th>检查标准</th><th>检查方法</th></tr></thead>
-        <tbody>
-          ${(d.points || []).map((p, i) => `
-            <tr><td>${i + 1}</td><td>${p.name}</td><td>${p.standard || '-'}</td><td>${p.method || '-'}</td></tr>
-          `).join('') || '<tr><td colspan=\"4\"><div class=\"empty-state\">暂无巡检点</div></td></tr>'}
-        </tbody>
-      </table>
+      <div class="section-title">巡检点配置</div>
+      ${(d.points || []).length ? `
+        <table>
+          <thead><tr><th>序号</th><th>巡检点名称</th><th>检查标准</th><th>检查方法</th></tr></thead>
+          <tbody>
+            ${d.points.map((p, i) => `
+              <tr><td>${i + 1}</td><td>${p.name}</td><td>${p.standard || '-'}</td><td>${p.method || '-'}</td></tr>
+            `).join('')}
+          </tbody>
+        </table>
+      ` : '<div class="empty-state">暂无巡检点配置</div>'}
 
-      <div class="section-title" style="margin-top:16px;">异常历史</div>
-      <table>
-        <thead><tr><th>ID</th><th>等级</th><th>描述</th><th>状态</th><th>报告人</th><th>报告时间</th></tr></thead>
-        <tbody>
-          ${(d.anomalies || []).map(a => `
-            <tr>
-              <td>#${a.id}</td>
-              <td>${levelBadge(a.level)}</td>
-              <td>${a.description}</td>
-              <td>${statusBadge(a.status)}</td>
-              <td>${a.reporter_name || '-'}</td>
-              <td>${a.reported_at}</td>
-            </tr>
-          `).join('') || '<tr><td colspan=\"6\"><div class=\"empty-state\">暂无异常记录</div></td></tr>'}
-        </tbody>
-      </table>
+      <div class="section-title" style="margin-top:16px;">近期巡检任务</div>
+      ${(d.tasks || []).length ? `
+        <table>
+          <thead><tr><th>任务日期</th><th>所属计划</th><th>巡检员</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody>
+            ${d.tasks.slice(0, 10).map(t => `
+              <tr>
+                <td>${t.task_date}</td>
+                <td>${t.plan_name || '-'}</td>
+                <td>${t.inspector_name || '-'}</td>
+                <td>${statusBadge(t.status)}</td>
+                <td><button class="btn btn-sm" onclick="showTaskDetail(${t.id})">详情</button></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      ` : '<div class="empty-state">暂无近期任务</div>'}
+
+      <div class="section-title" style="margin-top:16px;">异常历史记录</div>
+      ${(d.anomalies || []).length ? `
+        <table>
+          <thead><tr><th>ID</th><th>等级</th><th>描述</th><th>状态</th><th>报告人</th><th>报告时间</th><th>操作</th></tr></thead>
+          <tbody>
+            ${d.anomalies.map(a => `
+              <tr>
+                <td>#${a.id}</td>
+                <td>${levelBadge(a.level)}</td>
+                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${a.description}</td>
+                <td>${statusBadge(a.status)}</td>
+                <td>${a.reporter_name || '-'}</td>
+                <td>${a.reported_at}</td>
+                <td><button class="btn btn-sm" onclick="showAnomalyDetail(${a.id})">详情</button></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      ` : '<div class="empty-state">暂无异常记录</div>'}
 
       <div style="text-align:right;margin-top:16px;">
         <button class="btn" onclick="closeModal()">关闭</button>

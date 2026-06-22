@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+inspection.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.swp
+*.swo
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+test-results/
+screenshots/
+coverage/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Cache
+.cache/
+.npm
+.eslintcache
