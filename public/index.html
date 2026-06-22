@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>设备巡检计划与异常闭环系统</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="logo">
+      <span class="logo-icon">🛡️</span>
+      <h1>设备巡检计划与异常闭环系统</h1>
+    </div>
+    <div class="user-info">
+      <select id="currentUser">
+      </select>
+    </div>
+  </header>
+  <div class="layout">
+    <nav class="sidebar">
+      <ul id="nav-menu">
+        <li data-page="dashboard" class="active">📊 统计看板</li>
+        <li data-page="calendar">📅 计划日历</li>
+        <li data-page="tasks">✅ 巡检任务</li>
+        <li data-page="anomalies">⚠️ 异常闭环</li>
+        <li data-page="devices">🔧 设备档案</li>
+      </ul>
+    </nav>
+    <main class="content">
+      <div id="page-content"></div>
+    </main>
+  </div>
+</div>
+
+<div id="modal" class="modal" style="display:none;">
+  <div class="modal-content">
+    <div class="modal-header">
+      <span id="modal-title"></span>
+      <span class="close" onclick="closeModal()">&times;</span>
+    </div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
